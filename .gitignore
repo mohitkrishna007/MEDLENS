@@ -1,0 +1,27 @@
+# Database & Local Files
+*.db
+*.sqlite3
+medlens.db
+uploads/*
+!uploads/.gitkeep
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+env/
+ENV/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

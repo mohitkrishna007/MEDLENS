@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  medlens-app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - DATABASE_URL=sqlite:///./medlens.db
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./uploads:/app/uploads
+      - ./medlens.db:/app/medlens.db
+    restart: unless-stopped
