@@ -49,6 +49,10 @@ class PatientOut(BaseModel):
     class Config:
         from_attributes = True
 
+class LoginRequest(BaseModel):
+    patient_id_code: str
+    display_name: Optional[str] = None
+
 class LabResultOut(BaseModel):
     id: int
     patient_id: int

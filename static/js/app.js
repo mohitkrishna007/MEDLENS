@@ -8,6 +8,22 @@ let selectedFile = null;
 document.addEventListener('DOMContentLoaded', () => {
   lucide.createIcons();
   setupDropZone();
+  
+  // Check stored patient session
+  const storedSession = localStorage.getItem('medlens_patient_session');
+  if (storedSession) {
+    try {
+      const pData = JSON.parse(storedSession);
+      selectPatient(pData.id).then(() => {
+        updateUserSessionHeader();
+        navigateTo('record');
+      });
+      return;
+    } catch (e) {
+      localStorage.removeItem('medlens_patient_session');
+    }
+  }
+
   // Automatically check if demo patient exists or load default dashboard
   fetchPatients().then(patients => {
     if (patients.length === 0) {
@@ -79,6 +95,58 @@ function closeToast() {
 }
 
 // ----------------------------
+// Authentication & Login Handler
+// ----------------------------
+async function handlePatientLogin(event) {
+  event.preventDefault();
+  const code = document.getElementById('login-pat-code').value.trim();
+  const name = document.getElementById('login-pat-name').value.trim();
+
+  if (!code) return showToast('Input Required', 'Please enter your Patient ID Code', 'error');
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_id_code: code, display_name: name })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Login failed');
+
+    currentPatient = data.patient;
+    localStorage.setItem('medlens_patient_session', JSON.stringify(currentPatient));
+    updateUserSessionHeader();
+    
+    await selectPatient(currentPatient.id);
+    showToast('Welcome Back', data.message, 'success');
+    navigateTo('record');
+  } catch (err) {
+    showToast('Login Notice', err.message, 'error');
+  }
+}
+
+function updateUserSessionHeader() {
+  const badge = document.getElementById('user-account-badge');
+  const nameEl = document.getElementById('header-user-name');
+  if (currentPatient) {
+    nameEl.textContent = `${currentPatient.display_name} (${currentPatient.patient_id_code})`;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+  lucide.createIcons();
+}
+
+function logoutPatient() {
+  currentPatient = null;
+  currentRecord = null;
+  localStorage.removeItem('medlens_patient_session');
+  updateUserSessionHeader();
+  showToast('Logged Out', 'Patient session ended', 'info');
+  navigateTo('login');
+}
+
+// ----------------------------
 // API Service Calls
 // ----------------------------
 async function fetchPatients() {
@@ -97,7 +165,9 @@ async function selectPatient(patientId) {
     if (!res.ok) throw new Error('Patient record not found');
     currentRecord = await res.json();
     currentPatient = currentRecord.patient;
-    
+    localStorage.setItem('medlens_patient_session', JSON.stringify(currentPatient));
+    updateUserSessionHeader();
+
     // Update active navbar badges
     const unresolvedCount = currentRecord.conflicts.filter(c => c.status === 'Unresolved').length;
     const badge = document.getElementById('nav-conflict-badge');
@@ -510,7 +580,6 @@ function renderTrendChartData(trendData, testName) {
     }
   });
 
-  // Neutral trend summary phrasing (Medically compliant!)
   const summaryBox = document.getElementById('trend-neutral-summary');
   if (points.length > 1) {
     const firstP = points[0];
@@ -544,8 +613,8 @@ function closeNewPatientModal() {
 }
 
 async function submitNewPatient() {
-  const code = document.getElementById('new-pat-code').value || `PAT-${Date.now().toString().slice(-4)}`;
-  const name = document.getElementById('new-pat-name').value;
+  const code = document.getElementById('new-pat-code').value.trim() || `PAT-${Date.now().toString().slice(-4)}`;
+  const name = document.getElementById('new-pat-name').value.trim();
   if (!name) return showToast('Input Required', 'Please provide a patient display name', 'error');
 
   const age = parseInt(document.getElementById('new-pat-age').value) || null;
@@ -566,14 +635,17 @@ async function submitNewPatient() {
         conditions: conds
       })
     });
-    if (!res.ok) throw new Error('Patient creation failed');
+    if (!res.ok) {
+      const errData = await res.json();
+      throw new Error(errData.detail || 'Patient creation failed');
+    }
     const newP = await res.json();
     closeNewPatientModal();
     showToast('Patient Created', `Created intake for ${name}`, 'success');
     await selectPatient(newP.id);
     navigateTo('record');
   } catch (err) {
-    showToast('Error', 'Patient ID code already exists or invalid input', 'error');
+    showToast('Notice', err.message, 'error');
   }
 }
 

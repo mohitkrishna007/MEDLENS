@@ -38,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/tmp/uploads" if os.getenv("VERCEL") else "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ----------------------------
@@ -47,6 +47,45 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "service": "MedLens Clinical Intelligence API", "version": "1.0.0"}
+
+# ----------------------------
+# Authentication & Login API
+# ----------------------------
+@app.post("/api/auth/login")
+def login_patient(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
+    code_clean = payload.patient_id_code.strip()
+    patient = db.query(Patient).filter(Patient.patient_id_code.ilike(code_clean)).first()
+    
+    if not patient:
+        if code_clean.upper() in ["PAT-2025-089", "JANE DOE", "DEMO", "PATIENT"]:
+            patient = seed_demo_patient(db)
+        elif payload.display_name and payload.display_name.strip():
+            patient = Patient(
+                patient_id_code=code_clean,
+                display_name=payload.display_name.strip(),
+                notes="Created via patient portal login."
+            )
+            db.add(patient)
+            db.commit()
+            db.refresh(patient)
+            
+            t_event = TimelineEvent(
+                patient_id=patient.id,
+                event_type="Intake",
+                event_date=patient.created_at.strftime("%Y-%m-%d"),
+                title="Patient Intake Registered",
+                description=f"Patient portal account created for {patient.display_name}."
+            )
+            db.add(t_event)
+            db.commit()
+        else:
+            raise HTTPException(status_code=404, detail=f"No patient record found for ID '{code_clean}'. Enter your Display Name below to create your intake profile.")
+
+    return {
+        "success": True,
+        "message": f"Welcome back, {patient.display_name}",
+        "patient": schemas.PatientOut.model_validate(patient)
+    }
 
 # ----------------------------
 # Seed Demo Endpoint
@@ -61,17 +100,21 @@ def seed_demo_data(db: Session = Depends(get_db)):
 # ----------------------------
 @app.get("/api/patients", response_model=List[schemas.PatientOut])
 def get_patients(db: Session = Depends(get_db)):
-    return db.query(Patient).order_by(Patient.updated_at.desc()).all()
+    patients = db.query(Patient).order_by(Patient.updated_at.desc()).all()
+    if not patients:
+        demo = seed_demo_patient(db)
+        patients = [demo]
+    return patients
 
 @app.post("/api/patients", response_model=schemas.PatientOut)
 def create_patient(payload: schemas.PatientCreate, db: Session = Depends(get_db)):
-    existing = db.query(Patient).filter(Patient.patient_id_code == payload.patient_id_code).first()
+    existing = db.query(Patient).filter(Patient.patient_id_code.ilike(payload.patient_id_code.strip())).first()
     if existing:
-        raise HTTPException(status_code=400, detail=f"Patient ID {payload.patient_id_code} already exists.")
+        raise HTTPException(status_code=400, detail=f"Patient ID '{payload.patient_id_code}' already exists.")
         
     patient = Patient(
-        patient_id_code=payload.patient_id_code,
-        display_name=payload.display_name,
+        patient_id_code=payload.patient_id_code.strip(),
+        display_name=payload.display_name.strip(),
         age=payload.age,
         sex=payload.sex,
         notes=payload.notes,
@@ -85,7 +128,6 @@ def create_patient(payload: schemas.PatientCreate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(patient)
     
-    # Add initial timeline event for intake
     t_event = TimelineEvent(
         patient_id=patient.id,
         event_type="Intake",
@@ -102,8 +144,12 @@ def create_patient(payload: schemas.PatientCreate, db: Session = Depends(get_db)
 def get_patient_record(patient_id: int, db: Session = Depends(get_db)):
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
-        
+        # Fallback to first available patient or seed demo
+        patient = db.query(Patient).first()
+        if not patient:
+            patient = seed_demo_patient(db)
+        patient_id = patient.id
+
     documents = db.query(Document).filter(Document.patient_id == patient_id).all()
     lab_results = db.query(LabResult).filter(LabResult.patient_id == patient_id).all()
     conflicts = db.query(Conflict).filter(Conflict.patient_id == patient_id).all()
@@ -128,18 +174,15 @@ async def upload_document(patient_id: int, file: UploadFile = File(...), db: Ses
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found.")
 
-    # Save uploaded file
     file_path = os.path.join(UPLOAD_DIR, f"{patient_id}_{file.filename}")
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     file_size = os.path.getsize(file_path)
 
-    # 1. Text Extraction
     extracted_text_info = extract_text_from_file(file_path)
     raw_text = extracted_text_info.get("text", "")
 
-    # 2. Save Document Record
     doc = Document(
         patient_id=patient_id,
         filename=file.filename,
@@ -154,11 +197,9 @@ async def upload_document(patient_id: int, file: UploadFile = File(...), db: Ses
     db.commit()
     db.refresh(doc)
 
-    # 3. Run Structured AI Extraction Pipeline
     extracted_payload = extract_structured_data(raw_text, file.filename)
     doc.doc_type = extracted_payload.get("doc_type", "General Report")
 
-    # 4. Save Extracted Lab Results
     extracted_labs = extracted_payload.get("lab_results", [])
     doc.extracted_field_count = len(extracted_labs)
     
@@ -185,7 +226,6 @@ async def upload_document(patient_id: int, file: UploadFile = File(...), db: Ses
     doc.processing_status = "PROCESSED"
     db.commit()
 
-    # 5. Timeline Event
     report_date = extracted_payload.get("header_info", {}).get("report_date") or doc.uploaded_at.strftime("%Y-%m-%d")
     t_event = TimelineEvent(
         patient_id=patient_id,
@@ -198,11 +238,9 @@ async def upload_document(patient_id: int, file: UploadFile = File(...), db: Ses
     )
     db.add(t_event)
 
-    # 6. Run Conflict Detection Engine
     db.refresh(patient)
     new_conflicts = detect_patient_conflicts(patient, db)
     for c_item in new_conflicts:
-        # Check if already exists to avoid duplicates
         dup = db.query(Conflict).filter(
             Conflict.patient_id == patient_id,
             Conflict.field_name == c_item["field_name"],
@@ -213,7 +251,6 @@ async def upload_document(patient_id: int, file: UploadFile = File(...), db: Ses
             c_obj = Conflict(**c_item)
             db.add(c_obj)
 
-    # 7. Generate Updated Safe AI Summary
     db.commit()
     db.refresh(patient)
     summary_data = generate_patient_summary(patient)
@@ -248,11 +285,10 @@ def update_lab_result(result_id: int, payload: schemas.LabResultUpdate, db: Sess
     if payload.test_date is not None:
         result.test_date = payload.test_date
 
-    # Re-evaluate status against reference range
     status, num_val = classify_lab_result(result.value, result.reference_range)
     result.status = status
     result.numeric_value = num_val
-    result.verification_status = payload.verification_status # "User Verified" or "User Edited"
+    result.verification_status = payload.verification_status
 
     db.commit()
     db.refresh(result)
