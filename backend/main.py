@@ -38,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/tmp/uploads" if os.getenv("VERCEL") else "uploads")
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ----------------------------
@@ -88,7 +88,7 @@ def login_patient(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
     }
 
 # ----------------------------
-# Seed Demo Endpoint (Vercel Serverless Ready)
+# Seed Demo Endpoint
 # ----------------------------
 @app.post("/api/demo/seed")
 def seed_demo_data(db: Session = Depends(get_db)):
@@ -380,4 +380,5 @@ if os.path.exists(static_dir):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=port, reload=False)
