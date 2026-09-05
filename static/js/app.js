@@ -24,14 +24,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Automatically check if demo patient exists or load default dashboard
-  fetchPatients().then(patients => {
-    if (patients.length === 0) {
-      loadDemoMode();
-    } else {
-      selectPatient(patients[0].id);
-    }
-  });
+  // Default to Login Screen if not logged in
+  navigateTo('login');
 });
 
 // ----------------------------
