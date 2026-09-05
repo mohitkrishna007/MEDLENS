@@ -20,6 +20,14 @@
       "dest": "api/index.py"
     },
     {
+      "src": "/js/(.*)",
+      "dest": "static/js/$1"
+    },
+    {
+      "src": "/",
+      "dest": "static/index.html"
+    },
+    {
       "src": "/(.*)",
       "dest": "static/$1"
     }
