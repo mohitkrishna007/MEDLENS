@@ -19,6 +19,10 @@ from backend.services.conflict_detector import detect_patient_conflicts
 from backend.services.ai_summary import generate_patient_summary
 from backend.services.demo_data import seed_demo_patient
 from backend.services.pdf_export import generate_patient_pdf
+import re
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Response, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 # Ensure DB tables exist
 Base.metadata.create_all(bind=engine)
@@ -29,14 +33,28 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS configuration for development and deployment
+# Compression Middleware for Response Efficiency
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Secure CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False, # Secure setting for wildcard origins
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# HTTP Security Headers Middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = "default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data:;"
+    return response
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -184,17 +202,30 @@ def get_patient_record(patient_id: int, db: Session = Depends(get_db)):
         "summary": schemas.AISummaryOut.model_validate(summary) if summary else None
     }
 
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".txt", ".csv"}
+
 # ----------------------------
 # Document Upload & Extraction Pipeline
 # ----------------------------
 @app.post("/api/patients/{patient_id}/documents")
-async def upload_document(patient_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+def upload_document(patient_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
         patient = seed_demo_patient(db)
         patient_id = patient.id
 
-    file_path = os.path.join(UPLOAD_DIR, f"{patient_id}_{file.filename}")
+    # Security: Sanitize filename against path traversal
+    safe_filename = os.path.basename(file.filename or "document.pdf")
+    safe_filename = re.sub(r"[^\w\.-]", "_", safe_filename)
+    
+    ext = os.path.splitext(safe_filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File format '{ext}' is not supported. Permitted extensions: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+
+    file_path = os.path.join(UPLOAD_DIR, f"{patient_id}_{safe_filename}")
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 

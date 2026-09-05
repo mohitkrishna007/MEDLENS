@@ -41,7 +41,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), index=True, nullable=False)
     filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
     doc_type = Column(String, default="General Report") # e.g. Blood Test, Prescription, Summary
@@ -60,8 +60,8 @@ class LabResult(Base):
     __tablename__ = "lab_results"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
-    document_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), index=True, nullable=False)
+    document_id = Column(Integer, ForeignKey("documents.id"), index=True, nullable=True)
     test_name = Column(String, index=True, nullable=False)
     value = Column(String, nullable=False)          # Original text value e.g. "11.2", "> 5.0", "Negative"
     numeric_value = Column(Float, nullable=True)    # Extracted float for charting if possible
@@ -84,7 +84,7 @@ class Conflict(Base):
     __tablename__ = "conflicts"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), index=True, nullable=False)
     conflict_type = Column(String, nullable=False) # Demographic, Medication, Lab Result, Date, Allergy
     field_name = Column(String, nullable=False)
     source_a_name = Column(String, nullable=False)
@@ -103,7 +103,7 @@ class TimelineEvent(Base):
     __tablename__ = "timeline_events"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), index=True, nullable=False)
     event_type = Column(String, nullable=False) # Report Upload, Lab Test, Prescription, Condition, Intake
     event_date = Column(String, nullable=False) # YYYY-MM-DD
     title = Column(String, nullable=False)
@@ -118,7 +118,7 @@ class AISummary(Base):
     __tablename__ = "ai_summaries"
 
     id = Column(Integer, primary_key=True, index=True)
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    patient_id = Column(Integer, ForeignKey("patients.id"), index=True, nullable=False)
     reviewed_items_count = Column(Integer, default=0)
     text_summary = Column(Text, nullable=False)
     disclaimer = Column(Text, nullable=False)

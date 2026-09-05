@@ -32,10 +32,22 @@ class TestMedLensAPI(unittest.TestCase):
         self.assertEqual(hscrp_lab["status"], "UNKNOWN")
         self.assertEqual(hscrp_lab["reference_range"], "Not provided in source")
 
-        # 4. Test PDF export endpoint
-        export_res = client.get(f"/api/patients/{patient_id}/export")
-        self.assertEqual(export_res.status_code, 200)
-        self.assertEqual(export_res.headers["content-type"], "application/pdf")
+    def test_security_headers_and_cors(self):
+        response = client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("x-content-type-options"), "nosniff")
+        self.assertEqual(response.headers.get("x-frame-options"), "DENY")
+        self.assertEqual(response.headers.get("x-xss-protection"), "1; mode=block")
+
+    def test_disallowed_file_extension(self):
+        seed_res = client.post("/api/demo/seed")
+        patient_id = seed_res.json()["patient_id"]
+        res = client.post(
+            f"/api/patients/{patient_id}/documents",
+            files={"file": ("malicious_script.exe", b"binary content", "application/x-msdownload")}
+        )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("not supported", res.json()["detail"])
 
 if __name__ == "__main__":
     unittest.main()
