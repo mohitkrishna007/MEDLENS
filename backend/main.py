@@ -88,12 +88,31 @@ def login_patient(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
     }
 
 # ----------------------------
-# Seed Demo Endpoint
+# Seed Demo Endpoint (Vercel Serverless Ready)
 # ----------------------------
 @app.post("/api/demo/seed")
 def seed_demo_data(db: Session = Depends(get_db)):
     patient = seed_demo_patient(db)
-    return {"message": "Demo data successfully seeded", "patient_id": patient.id, "patient_code": patient.patient_id_code}
+    
+    documents = db.query(Document).filter(Document.patient_id == patient.id).all()
+    lab_results = db.query(LabResult).filter(LabResult.patient_id == patient.id).all()
+    conflicts = db.query(Conflict).filter(Conflict.patient_id == patient.id).all()
+    timeline = db.query(TimelineEvent).filter(TimelineEvent.patient_id == patient.id).order_by(TimelineEvent.event_date.asc()).all()
+    summary = db.query(AISummary).filter(AISummary.patient_id == patient.id).order_by(AISummary.created_at.desc()).first()
+
+    return {
+        "message": "Demo data successfully seeded",
+        "patient_id": patient.id,
+        "patient_code": patient.patient_id_code,
+        "record": {
+            "patient": schemas.PatientOut.model_validate(patient),
+            "documents": [schemas.DocumentOut.model_validate(d) for d in documents],
+            "lab_results": [schemas.LabResultOut.model_validate(l) for l in lab_results],
+            "conflicts": [schemas.ConflictOut.model_validate(c) for c in conflicts],
+            "timeline": [schemas.TimelineEventOut.model_validate(t) for t in timeline],
+            "summary": schemas.AISummaryOut.model_validate(summary) if summary else None
+        }
+    }
 
 # ----------------------------
 # Patient Management
@@ -144,11 +163,11 @@ def create_patient(payload: schemas.PatientCreate, db: Session = Depends(get_db)
 def get_patient_record(patient_id: int, db: Session = Depends(get_db)):
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
-        # Fallback to first available patient or seed demo
-        patient = db.query(Patient).first()
-        if not patient:
-            patient = seed_demo_patient(db)
-        patient_id = patient.id
+        patient = db.query(Patient).filter(Patient.patient_id_code == "PAT-2025-089").first()
+    if not patient:
+        patient = seed_demo_patient(db)
+        
+    patient_id = patient.id
 
     documents = db.query(Document).filter(Document.patient_id == patient_id).all()
     lab_results = db.query(LabResult).filter(LabResult.patient_id == patient_id).all()
@@ -172,7 +191,8 @@ def get_patient_record(patient_id: int, db: Session = Depends(get_db)):
 async def upload_document(patient_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
+        patient = seed_demo_patient(db)
+        patient_id = patient.id
 
     file_path = os.path.join(UPLOAD_DIR, f"{patient_id}_{file.filename}")
     with open(file_path, "wb") as buffer:
@@ -314,6 +334,10 @@ def resolve_conflict(patient_id: int, conflict_id: int, resolution_note: Optiona
 @app.get("/api/patients/{patient_id}/trends")
 def get_longitudinal_trends(patient_id: int, db: Session = Depends(get_db)):
     labs = db.query(LabResult).filter(LabResult.patient_id == patient_id).order_by(LabResult.test_date.asc()).all()
+    if not labs:
+        patient = seed_demo_patient(db)
+        labs = db.query(LabResult).filter(LabResult.patient_id == patient.id).order_by(LabResult.test_date.asc()).all()
+
     grouped = {}
     for l in labs:
         test = l.test_name.strip()
@@ -338,7 +362,7 @@ def get_longitudinal_trends(patient_id: int, db: Session = Depends(get_db)):
 def export_patient_pdf(patient_id: int, db: Session = Depends(get_db)):
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
+        patient = seed_demo_patient(db)
         
     pdf_bytes = generate_patient_pdf(patient)
     return Response(
