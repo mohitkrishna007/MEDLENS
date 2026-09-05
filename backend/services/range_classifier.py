@@ -5,7 +5,6 @@ def parse_numeric(val_str: str) -> Optional[float]:
     """Extracts first numeric float from string e.g. '11.2 g/dL' -> 11.2"""
     if not val_str:
         return None
-    # match patterns like 12, 12.5, .5
     match = re.search(r"[-+]?\d*\.\d+|\d+", str(val_str))
     if match:
         try:
@@ -29,7 +28,7 @@ def classify_lab_result(val_str: str, ref_range: Optional[str]) -> Tuple[str, Op
     """
     numeric_val = parse_numeric(val_str)
     
-    if not ref_range or ref_range.strip().lower() in ["not provided", "none", "n/a", "", "null", "unknown"]:
+    if not ref_range or ref_range.strip().lower() in ["not provided", "not provided in source", "none", "n/a", "", "null", "unknown"]:
         return "UNKNOWN", numeric_val
 
     ref_clean = ref_range.strip()
@@ -40,24 +39,16 @@ def classify_lab_result(val_str: str, ref_range: Optional[str]) -> Tuple[str, Op
         if "negative" in ref_clean.lower() or "non-reactive" in ref_clean.lower() or "normal" in ref_clean.lower():
             return "NORMAL", numeric_val
         elif "positive" in ref_clean.lower() or "reactive" in ref_clean.lower():
-            return "LOW", numeric_val # Or abnormal
+            return "LOW", numeric_val
     elif val_clean in ["positive", "reactive", "detected"]:
         if "negative" in ref_clean.lower() or "non-reactive" in ref_clean.lower():
-            return "HIGH", numeric_val # Abnormal flag
+            return "HIGH", numeric_val
 
     if numeric_val is None:
         return "UNKNOWN", None
 
-    # 2. Inequality in reference range e.g. "< 5.0", "<5", "<= 10", "> 10.0"
-    less_than = re.search(r"<\s*=?\s*(\d*\.\d+|\d+)", ref_clean)
-    if less_than:
-        upper_limit = float(less_than.group(1))
-        if numeric_val <= upper_limit:
-            return "NORMAL", numeric_val
-        else:
-            return "HIGH", numeric_val
-
-    greater_than = re.search(r">\s*=?\s*(\d*\.\d+|\d+)", ref_clean)
+    # 2. Greater Than Inequality e.g. ">= 40", "> 40", "≥ 40"
+    greater_than = re.search(r"(?:>=|≥|>)\s*(\d*\.\d+|\d+)", ref_clean)
     if greater_than:
         lower_limit = float(greater_than.group(1))
         if numeric_val >= lower_limit:
@@ -65,7 +56,16 @@ def classify_lab_result(val_str: str, ref_range: Optional[str]) -> Tuple[str, Op
         else:
             return "LOW", numeric_val
 
-    # 3. Numeric range e.g. "12.0 - 15.5", "12.0-15.5", "12 to 15.5", "12 – 15.5"
+    # 3. Less Than Inequality e.g. "< 200", "<= 100", "≤ 100"
+    less_than = re.search(r"(?:<=|≤|<)\s*(\d*\.\d+|\d+)", ref_clean)
+    if less_than:
+        upper_limit = float(less_than.group(1))
+        if numeric_val <= upper_limit:
+            return "NORMAL", numeric_val
+        else:
+            return "HIGH", numeric_val
+
+    # 4. Numeric range e.g. "13.0 - 17.0", "12.0-15.5", "12 to 15.5", "12 – 15.5"
     range_match = re.search(r"(\d*\.\d+|\d+)\s*(?:-|to|–|—)\s*(\d*\.\d+|\d+)", ref_clean)
     if range_match:
         low_limit = float(range_match.group(1))
@@ -78,7 +78,7 @@ def classify_lab_result(val_str: str, ref_range: Optional[str]) -> Tuple[str, Op
         else:
             return "NORMAL", numeric_val
 
-    # 4. Single upper bound limit e.g. "Up to 200" or "Max 150"
+    # 5. Single upper bound limit e.g. "Up to 200" or "Max 150"
     up_to_match = re.search(r"(?:up\s+to|max|less\s+than)\s+(\d*\.\d+|\d+)", ref_clean, re.IGNORECASE)
     if up_to_match:
         max_val = float(up_to_match.group(1))

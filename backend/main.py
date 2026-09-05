@@ -220,6 +220,14 @@ async def upload_document(patient_id: int, file: UploadFile = File(...), db: Ses
     extracted_payload = extract_structured_data(raw_text, file.filename)
     doc.doc_type = extracted_payload.get("doc_type", "General Report")
 
+    header_info = extracted_payload.get("header_info", {})
+    if header_info.get("patient_name") and (not patient.display_name or patient.display_name in ["Jane Doe", "New Patient", "Patient", ""]):
+        patient.display_name = header_info["patient_name"]
+    if header_info.get("age"):
+        patient.age = header_info["age"]
+    if header_info.get("sex"):
+        patient.sex = header_info["sex"]
+
     extracted_labs = extracted_payload.get("lab_results", [])
     doc.extracted_field_count = len(extracted_labs)
     

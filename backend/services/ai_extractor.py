@@ -4,7 +4,7 @@ import re
 from typing import List, Dict, Any, Optional
 from backend.services.range_classifier import classify_lab_result
 
-# Extraction system prompt instructing strict medical compliance
+# System prompt for optional Gemini API extraction
 EXTRACTION_PROMPT = """
 You are a specialized medical document processing AI for MedLens.
 Extract structured clinical information from the provided document text.
@@ -12,8 +12,8 @@ Extract structured clinical information from the provided document text.
 CRITICAL MEDICAL SAFETY RULES:
 1. Extract ONLY information explicitly present in the document.
 2. DO NOT invent test values, units, dates, or reference ranges.
-3. If a reference range is NOT explicitly stated in the source text, set reference_range to null or "Not provided". DO NOT use external medical knowledge to manufacture a reference range.
-4. Extract test date if stated.
+3. If a reference range is NOT explicitly stated in the source text, set reference_range to "Not provided in source".
+4. Extract patient header info: patient_name, age, sex, report_date.
 
 Return a valid JSON object matching this schema:
 {
@@ -22,7 +22,7 @@ Return a valid JSON object matching this schema:
     "patient_name": string or null,
     "age": integer or null,
     "sex": string or null,
-    "report_date": string (YYYY-MM-DD or readable) or null
+    "report_date": string or null
   },
   "lab_results": [
     {
@@ -31,31 +31,58 @@ Return a valid JSON object matching this schema:
       "unit": string or null,
       "reference_range": string or null,
       "test_date": string or null,
-      "snippet": string (exact text segment from document where extracted),
-      "confidence": "High" | "Medium" | "Low"
+      "snippet": string,
+      "confidence": "High" | "Medium"
     }
   ],
-  "medications": [
-    {
-      "name": string,
-      "dose": string or null,
-      "frequency": string or null,
-      "confidence": "High" | "Medium" | "Low"
-    }
-  ],
-  "conditions": [
-    {
-      "name": string,
-      "confidence": "High" | "Medium" | "Low"
-    }
-  ]
+  "medications": [],
+  "conditions": []
 }
 """
+
+LAB_TEST_MAP = [
+    ("hemoglobin", "Hemoglobin"),
+    ("hgb", "Hemoglobin"),
+    ("wbc", "WBC"),
+    ("white blood cell", "WBC"),
+    ("platelets", "Platelets"),
+    ("platelet count", "Platelets"),
+    ("fasting glucose", "Fasting Glucose"),
+    ("fasting blood sugar", "Fasting Glucose"),
+    ("glucose, fasting", "Fasting Glucose"),
+    ("glucose", "Glucose"),
+    ("total cholesterol", "Total Cholesterol"),
+    ("cholesterol, total", "Total Cholesterol"),
+    ("cholesterol", "Total Cholesterol"),
+    ("ldl cholesterol", "LDL"),
+    ("ldl", "LDL"),
+    ("hdl cholesterol", "HDL"),
+    ("hdl", "HDL"),
+    ("triglycerides", "Triglycerides"),
+    ("serum creatinine", "Creatinine"),
+    ("creatinine", "Creatinine"),
+    ("alt", "ALT"),
+    ("sgpt", "ALT"),
+    ("ast", "AST"),
+    ("sgot", "AST"),
+    ("hba1c", "HbA1c"),
+    ("bun", "BUN"),
+    ("tsh", "TSH"),
+    ("vitamin d", "Vitamin D"),
+    ("vitamin b12", "Vitamin B12"),
+    ("hs-crp", "Hs-CRP"),
+    ("crp", "Hs-CRP"),
+    ("bilirubin", "Bilirubin"),
+    ("iron", "Iron"),
+    ("ferritin", "Ferritin")
+]
+
+UNITS_REGEX_STR = r"(g/dL|mg/dL|U/L|IU/L|10\^3/uL|10\^3/µL|x10\^3/uL|x10\^3/µL|10\^6/uL|cells/mcL|mcg/dL|ng/mL|pg/mL|mIU/L|uIU/mL|µIU/mL|mmol/L|umol/L|µmol/L|mEq/L|%|/\s*uL|/\s*µL|k/uL|M/uL)"
 
 def extract_structured_data(doc_text: str, filename: str = "document.pdf") -> Dict[str, Any]:
     """
     Main extraction function. Tries Gemini API if GEMINI_API_KEY set,
-    otherwise uses intelligent rule-based extraction pipeline.
+    otherwise uses deterministic, robust medical NLP extraction pipeline.
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if api_key and len(api_key.strip()) > 5:
@@ -68,21 +95,26 @@ def extract_structured_data(doc_text: str, filename: str = "document.pdf") -> Di
                 config={"response_mime_type": "application/json"}
             )
             parsed_json = json.loads(response.text)
-            return _post_process_extracted_data(parsed_json, filename)
+            processed = _post_process_extracted_data(parsed_json, filename)
+            if len(processed.get("lab_results", [])) > 0:
+                return processed
         except Exception as e:
-            print(f"[Gemini Extraction Notice] LLM extraction fallback to rule-engine: {e}")
+            print(f"[Gemini Extraction Notice] Gemini API fallback to rule engine: {e}")
 
-    # Rule-Based NLP Extraction Fallback
+    # Robust Rule-Based Extraction Engine
     return _rule_based_extraction(doc_text, filename)
 
 def _post_process_extracted_data(data: Dict[str, Any], filename: str) -> Dict[str, Any]:
     """Applies reference range classification engine to AI extractions."""
     lab_results = []
+    header_info = data.get("header_info", {})
+    report_date = header_info.get("report_date")
+
     for item in data.get("lab_results", []):
         val_str = str(item.get("value", "")).strip()
         ref_range = item.get("reference_range")
-        if ref_range and str(ref_range).strip().lower() in ["none", "null", "undefined"]:
-            ref_range = None
+        if ref_range and str(ref_range).strip().lower() in ["none", "null", "undefined", "not provided"]:
+            ref_range = "Not provided in source"
             
         status, num_val = classify_lab_result(val_str, ref_range)
         
@@ -93,7 +125,7 @@ def _post_process_extracted_data(data: Dict[str, Any], filename: str) -> Dict[st
             "unit": item.get("unit"),
             "reference_range": ref_range if ref_range else "Not provided in source",
             "status": status,
-            "test_date": item.get("test_date") or data.get("header_info", {}).get("report_date"),
+            "test_date": item.get("test_date") or report_date,
             "source_label": "AI EXTRACTED",
             "source_document_name": filename,
             "confidence": item.get("confidence", "High"),
@@ -107,92 +139,166 @@ def _post_process_extracted_data(data: Dict[str, Any], filename: str) -> Dict[st
 
 def _rule_based_extraction(doc_text: str, filename: str) -> Dict[str, Any]:
     """
-    Intelligent medical regex parser for PDFs and scanned text.
-    Extracts tabular test names, values, units, reference ranges, and header dates.
+    Robust medical lab report & demographics extraction pipeline.
+    Parses patient header info and tabular test results.
     """
-    lines = doc_text.split("\n")
-    lab_results = []
-    medications = []
-    conditions = []
+    lines = [line.strip() for line in doc_text.split("\n") if line.strip()]
     
-    # 1. Extract report date from header
-    date_match = re.search(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},\s+\d{4})\b", doc_text, re.IGNORECASE)
-    report_date = date_match.group(1) if date_match else None
+    # ----------------------------
+    # 1. Demographics Extraction
+    # ----------------------------
+    patient_name = None
+    age = None
+    sex = None
+    report_date = None
 
-    # 2. Extract patient name/age if present
-    age_match = re.search(r"Age\s*:\s*(\d{1,3})", doc_text, re.IGNORECASE)
-    age = int(age_match.group(1)) if age_match else None
-    
-    sex_match = re.search(r"Sex\s*:\s*(Male|Female|M|F)", doc_text, re.IGNORECASE)
-    sex = sex_match.group(1).upper() if sex_match else None
-
-    # 3. Known Common Medical Lab Patterns (e.g. "Hemoglobin 11.2 g/dL (12.0 - 15.5)")
-    # Pattern A: Test Name | Value | Unit | Reference Range
-    common_tests = [
-        "Hemoglobin", "HbA1c", "Fasting Blood Sugar", "Glucose", "Platelets", "WBC", "RBC", 
-        "Cholesterol", "Triglycerides", "HDL", "LDL", "Serum Creatinine", "BUN", "TSH", 
-        "Vitamin D", "Vitamin B12", "ALT", "AST", "Bilirubin", "Iron", "Ferritin"
-    ]
-    
     for line in lines:
-        line_clean = line.strip()
-        if not line_clean:
-            continue
-            
-        for test in common_tests:
-            if re.search(r"\b" + re.escape(test) + r"\b", line_clean, re.IGNORECASE):
-                # Search for numbers in line
-                nums = re.findall(r"\d+\.\d+|\d+", line_clean)
-                if nums:
-                    val_str = nums[0]
-                    # Check for units
-                    unit_match = re.search(r"(g/dL|mg/dL|%|mmol/L|mIU/L|ng/mL|pg/mL|uIU/mL|/\s*uL|cells/mcL)", line_clean, re.IGNORECASE)
-                    unit = unit_match.group(1) if unit_match else ""
-                    
-                    # Check for range in brackets or after
-                    range_match = re.search(r"\(?\s*(\d+\.?\d*\s*[-–to]\s*\d+\.?\d*|<\s*\d+\.?\d*|>\s*\d+\.?\d*)\s*\)?", line_clean)
-                    ref_range = range_match.group(1) if range_match else None
-                    
-                    status, num_val = classify_lab_result(val_str, ref_range)
-                    
-                    lab_results.append({
-                        "test_name": test,
-                        "value": val_str,
-                        "numeric_value": num_val,
-                        "unit": unit,
-                        "reference_range": ref_range if ref_range else "Not provided in source",
-                        "status": status,
-                        "test_date": report_date,
-                        "source_label": "AI EXTRACTED",
-                        "source_document_name": filename,
-                        "confidence": "High" if ref_range else "Medium",
-                        "verification_status": "AI Extracted",
-                        "text_snippet": line_clean,
-                        "page_number": 1
-                    })
+        if not patient_name:
+            nm = re.search(r"(?:Patient\s*Name|Patient|Name)\s*[:|-]\s*([A-Za-z .]{2,30})", line, re.IGNORECASE)
+            if nm:
+                cand = nm.group(1).strip()
+                if cand.lower() not in ["details", "report", "info", "age", "gender", "sex", "id", "date"]:
+                    patient_name = cand
+        if not age:
+            am = re.search(r"\bAge\b[^\n\d]*(\d{1,3})", line, re.IGNORECASE)
+            if am:
+                try:
+                    age = int(am.group(1))
+                except ValueError:
+                    pass
+        if not sex:
+            sm = re.search(r"\b(?:Sex|Gender)\s*[:|-]?\s*(Male|Female|M|F)\b", line, re.IGNORECASE)
+            if not sm:
+                sm = re.search(r"/\s*(Male|Female|M|F)\b", line, re.IGNORECASE)
+            if sm:
+                raw_s = sm.group(1).upper()
+                sex = "Male" if raw_s.startswith("M") else "Female"
+        if not report_date:
+            dm = re.search(r"\b(?:Date|Report Date|Sample Date|Collected Date)\s*[:|-]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}[-\s/]+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-\s/]+\d{2,4})\b", line, re.IGNORECASE)
+            if dm:
+                report_date = dm.group(1)
+
+    # ----------------------------
+    # 2. Lab Results Extraction
+    # ----------------------------
+    lab_results = []
+    extracted_tests_seen = set()
+
+    for idx, line in enumerate(lines):
+        # Merge next line if line is just a test name
+        full_line_context = line
+        if idx + 1 < len(lines):
+            full_line_context += " " + lines[idx + 1]
+
+        # Check against test dictionary
+        matched_test = None
+        target_text = None
+        for key_test, display_name in LAB_TEST_MAP:
+            if display_name.lower() not in extracted_tests_seen:
+                pattern = r"\b" + re.escape(key_test) + r"\b"
+                if re.search(pattern, line, re.IGNORECASE):
+                    matched_test = (key_test, display_name)
+                    target_text = line
+                    break
+                elif not re.search(r"\d", line) and re.search(pattern, full_line_context, re.IGNORECASE):
+                    matched_test = (key_test, display_name)
+                    target_text = full_line_context
                     break
 
-        # Check for Medication lines e.g. "Metformin 500mg - Twice daily"
-        med_match = re.search(r"(Metformin|Lisinopril|Atorvastatin|Amlodipine|Omeprazole|Levothyroxine|Aspirin)\s+(\d+\s*mg)", line_clean, re.IGNORECASE)
-        if med_match:
-            medications.append({
-                "name": med_match.group(1),
-                "dose": med_match.group(2),
-                "frequency": "Daily",
-                "confidence": "High"
-            })
+        if matched_test and target_text:
+            key_test, display_name = matched_test
+            
+            # Extract numerical result value
+            nums = re.findall(r"[-+]?\d*\.\d+|\d+", target_text)
+            if nums:
+                val_str = nums[0]
+                
+                # Extract Unit
+                unit_match = re.search(UNITS_REGEX_STR, target_text, re.IGNORECASE)
+                unit = unit_match.group(1) if unit_match else ""
 
-    doc_type = "Blood Test Report" if any("Blood" in l or "Hemoglobin" in l for l in lines) else "General Report"
+                # Extract Reference Range from source line
+                range_match = re.search(
+                    r"(\d+\.?\d*\s*(?:-|to|–|—)\s*\d+\.?\d*|(?:>=|<=|≥|≤|>|<)\s*=?\s*\d+\.?\d*|up\s+to\s+\d+\.?\d*|max\s+\d+\.?\d*)",
+                    target_text,
+                    re.IGNORECASE
+                )
+                
+                ref_range = None
+                if range_match:
+                    found_range = range_match.group(1).strip()
+                    if found_range != val_str:
+                        ref_range = found_range
+
+                status, num_val = classify_lab_result(val_str, ref_range)
+
+                lab_results.append({
+                    "test_name": display_name,
+                    "value": val_str,
+                    "numeric_value": num_val,
+                    "unit": unit if unit else None,
+                    "reference_range": ref_range if ref_range else "Not provided in source",
+                    "status": status,
+                    "test_date": report_date,
+                    "source_label": "AI EXTRACTED",
+                    "source_document_name": filename,
+                    "confidence": "High" if ref_range else "Medium",
+                    "verification_status": "AI Extracted",
+                    "text_snippet": target_text,
+                    "page_number": 1
+                })
+                extracted_tests_seen.add(display_name.lower())
+                extracted_tests_seen.add(key_test.lower())
+                for w in (key_test + " " + display_name).lower().split():
+                    if len(w) > 2:
+                        extracted_tests_seen.add(w)
+
+    # General Row Parser Pass for tests not in hardcoded dictionary
+    STOP_WORDS = {"patient", "age", "sex", "gender", "date", "report", "referred", "laboratory", "panel", "description", "result", "units", "reference", "range", "details", "metabolic", "blood", "count", "complete", "dr", "clinic"}
+    generic_rows = re.findall(
+        r"([A-Za-z\s]{3,25})\s+(\d+\.?\d*)\s*(g/dL|mg/dL|U/L|IU/L|10\^3/uL|x10\^3/uL|%|mmol/L)?\s*(\d+\.?\d*\s*[-–to]\s*\d+\.?\d*|[<>=≤≥]\s*\d+\.?\d*)?",
+        doc_text,
+        re.IGNORECASE
+    )
+    for g_name, g_val, g_unit, g_range in generic_rows:
+        g_name_clean = g_name.strip()
+        g_lower = g_name_clean.lower()
+        if len(g_name_clean) > 2 and g_lower not in extracted_tests_seen:
+            if not any(sw in g_lower for sw in STOP_WORDS):
+                status, num_val = classify_lab_result(g_val, g_range)
+                lab_results.append({
+                    "test_name": g_name_clean.title(),
+                    "value": g_val,
+                    "numeric_value": num_val,
+                    "unit": g_unit.strip() if g_unit else None,
+                    "reference_range": g_range.strip() if g_range else "Not provided in source",
+                    "status": status,
+                    "test_date": report_date,
+                    "source_label": "AI EXTRACTED",
+                    "source_document_name": filename,
+                    "confidence": "High" if g_range else "Medium",
+                    "verification_status": "AI Extracted",
+                    "text_snippet": f"{g_name_clean} {g_val} {g_unit or ''} {g_range or ''}".strip(),
+                    "page_number": 1
+                })
+                extracted_tests_seen.add(g_lower)
+
+    doc_type = "Blood Test Report" if len(lab_results) > 0 else "General Report"
+
+    # Log Extraction Summary
+    print(f"[Lab Extraction Pipeline] Candidate lab rows detected: {len(lines)}")
+    print(f"[Lab Extraction Pipeline] Structured lab results: {len(lab_results)}")
+    print(f"[Lab Extraction Pipeline] Patient fields detected: Name={patient_name}, Age={age}, Sex={sex}, Date={report_date}")
 
     return {
         "doc_type": doc_type,
         "header_info": {
-            "patient_name": None,
+            "patient_name": patient_name,
             "age": age,
             "sex": sex,
             "report_date": report_date
         },
         "lab_results": lab_results,
-        "medications": medications,
-        "conditions": conditions
+        "medications": [],
+        "conditions": []
     }
